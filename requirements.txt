@@ -1,0 +1,6 @@
+modelscope
+opencv-python
+matplotlib
+addict
+yapf
+sortedcontainers
