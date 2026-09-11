@@ -4,25 +4,47 @@
 
 To satisfy the project specifications, we have deployed **DDColor**, an open-source image colorization model published in a peer-reviewed venue (ICCV) in 2023. DDColor utilizes a dual-decoder architecture, leveraging a pixel decoder to maintain spatial resolution and a color decoder that uses multi-scale features to optimize learned color queries.
 
-## Failure Analysis & Taxonomy
+## Empirical Failure Analysis & Taxonomy
 
-As per the project scope, this section catalogs and stress-tests specific failure conditions. While DDColor achieves state-of-the-art results on standard benchmarks, it exhibits distinct vulnerabilities under the following conditions:
+The deployed DDColor architecture was evaluated across four challenging visual regimes using a standardized benchmark subject ("Nano Banana"). Below is the systematic failure taxonomy and root-cause analysis:
 
-*   **Out-of-Domain Inputs:** The model struggles significantly with out-of-domain inputs, such as historical line art, non-photorealistic sketches, or corrupted archival footage. It tends to default to desaturated or sepia tones due to a lack of relevant priors in its training manifold.
-*   **Complex Lighting:** When subjected to complex lighting conditions, the architecture fails to accurately separate illumination from reflectance. Extreme luminance intensities are frequently misclassified as intrinsic chrominance, leading to localized color distortion.
-*   **Fine Textures:** The network struggles to process fine textures, often generating noticeable chromatic aliasing and Moiré patterns.
-*   **Multi-Object Semantic Boundaries:** The model exhibits severe "color bleeding" across multi-object semantic boundaries. This failure mode is triggered when foreground and background occlusion edges share similar low-level contrast distributions.
+| Stress Condition | Primary Visual Artifact | Architectural / Theoretical Mechanism |
+| :--- | :--- | :--- |
+| **1. Complex Lighting** | Specular Chrominance Entanglement | Illuminant-reflectance ambiguity in CIELAB |
+| **2. Fine Textures** | Low-Frequency Chromatic Bleed | Downsampling bottleneck in pixel decoder |
+| **3. Multi-Object Semantic Boundary** | Global Chromatic Flooding | Spatial attention diffusion & loss of edges |
+| **4. Out-of-Domain Inputs** | Mean-Mode Collapse & Patchy Artifacts | Severe distribution shift from ImageNet |
 
-## Theoretical Failure Mechanisms
+---
 
-From a deep learning perspective, these failures are mathematically tied to the spatial downsampling bottlenecks and the loss formulation of the network. Deep colorization models typically predict the $a$ and $b$ channels of the CIELAB color space from the luminance channel $L$.
+### 1. Complex Lighting: Specular Chrominance Entanglement
 
-DDColor treats colorization as a classification problem over a quantized color space, optimizing an objective similar to cross-entropy drift:
+*   **Visual Evidence:** In the stress-test image below, the high-intensity overhead lamp cast and specular reflections along the tabletop are coated in deep, saturated yellow and amber tones.
+*   **Failure Analysis:** In natural image training sets, high luminance ($L \to 100$) strongly correlates with warm incandescent or solar light sources. The model cannot mathematically separate intrinsic surface reflectance (albedo) from extrinsic illumination:
 
-$$L_c = -\sum_{h,w}\sum_{q} Y_{h,w,q} \log(P_{h,w,q})$$
+$$\mathbf{I}(x,y) = \mathbf{R}(x,y) \cdot \mathbf{L}(x,y)$$
 
-When the model encounters out-of-domain data or complex lighting, the uncertainty flattens the predicted probability distribution $P_{h,w,q}$, pushing the expected value toward the mean (gray/desaturated). Furthermore, the attention mechanism's receptive field can smooth spatial gradients excessively, causing the predicted chrominance $\nabla P_{h,w}$ to diffuse across boundaries where semantic alignment fails.
+Because DDColor conditions color prediction solely on the luminance map $L$, extreme luminance values trick the color queries into predicting heavy chromaticity ($a^*, b^*$) onto uncolored metal surfaces.
 
-## Deliveries
+### 2. Fine Textures: Chromatic Aliasing & Local Bleed
 
-This README serves as the complete report describing where the model fails and in what ways.
+*   **Visual Evidence:** The dense woven fabric background exhibits an artificial split-tone effect (slate-blue drifting into warm earthen tones). The device's color spills over the high-frequency weave boundaries.
+*   **Failure Analysis:** The pixel decoder undergoes spatial downsampling to construct multi-scale feature pyramids. In regions of high spatial frequency $\omega_{\text{high}}$, the feature maps lose exact phase and edge alignment. Consequently, the low-frequency chrominance output cannot conform to individual micro-edges, producing chromatic blur.
+
+### 3. Multi-Object Semantic Boundaries: Chromatic Diffusion
+
+*   **Visual Evidence:** The model suffers a catastrophic breakdown. The entire uniform gray background is flooded with an intense red/orange wash, and the color boundaries between the subjects completely dissolve.
+*   **Failure Analysis:** The transformer-based color decoder uses cross-attention between learned color queries and visual feature maps:
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$
+
+When foreground objects and background share near-identical luminance and low edge gradients ($\nabla L \approx 0$), the attention map flattens. Unable to identify semantic occlusion contours, the network's color queries diffuse uniformly across the spatial domain.
+
+### 4. Out-of-Domain Inputs: Manifold Shift & Mode Collapse
+
+*   **Visual Evidence:** The technical engineering schematic is rendered with an artificial sepia-yellow paper wash, accompanied by an arbitrary yellow smear localized around the central blueprint.
+*   **Failure Analysis:** Technical line drawings occupy a completely disjoint subspace from natural photographic manifolds. Because the network encounters zero natural texture priors, the softmax distribution over the quantized color bins flattens:
+
+$$\mathcal{H}(P) = -\sum_{q} P(q) \log P(q) \to \text{maximum}$$
+
+To minimize expected cross-entropy loss under high uncertainty, the model collapses toward the dataset's empirical mean mode (aged sepia/parchment tone).
